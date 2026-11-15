@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# penguincam pre-commit hook. Never refuses.
+# Warns: an agent file staged, a staged README.md that breaks the README rule,
+# and em dashes added to a file that had none.
+set -u
+
+# shellcheck source=_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+if git rev-parse --verify -q HEAD >/dev/null; then
+  base=HEAD
+else
+  base="$(git hash-object -t tree /dev/null)"
+fi
+
+staged="$(git -c core.quotePath=false diff --cached --name-only --diff-filter=AMRC "$base" --)"
+
+# The overlay branch exists to carry agent files on a fork.
+agent=""
+if [ "$(git symbolic-ref --short -q HEAD || true)" != "$PC_OVERLAY_BRANCH" ]; then
+  agent="$(printf '%s\n' "$staged" | pc_agent_paths)"
+fi
+if [ -n "$agent" ]; then
+  first="$(printf '%s\n' "$agent" | sed -n 1p)"
+  pc_warn "agent files staged; the pre-push hook will refuse them: $(printf '%s\n' "$agent" | tr '\n' ' ')" \
+    "Agent files" \
+    "git rm -r --cached -- '$first' && printf '/%s\\n' '$first' >> \"\$(git rev-parse --git-common-dir)/info/exclude\""
+fi
+
+if printf '%s\n' "$staged" | grep -qxF README.md; then
+  readme="$(mktemp "${TMPDIR:-/tmp}/penguincam-readme.XXXXXX")"
+  git show :README.md > "$readme" 2>/dev/null
+  if ! report="$(bash "$(dirname "$0")/readme-check.sh" "$readme" 2>&1)"; then
+    pc_warn "README.md breaks the README rule: $(printf '%s' "$report" | tr '\n' ' ')" \
+      "README rule" \
+      "bash .githooks/readme-check.sh README.md   # fix each finding, then git add README.md"
+  fi
+  rm -f "$readme"
+fi
+
+git diff --cached --name-only --diff-filter=AM -z "$base" -- | while IFS= read -r -d '' path; do
+  # Files that already carry em dashes may keep them until rewritten.
+  if git cat-file -e "$base:$path" 2>/dev/null &&
+    git show "$base:$path" 2>/dev/null | grep -qF "$PC_EM_DASH"; then
+    continue
+  fi
+  if git diff --cached -U0 "$base" -- "$path" | grep -E '^\+' | grep -vE '^\+\+\+ ' | grep -qF "$PC_EM_DASH"; then
+    pc_warn "em dash added to $path" \
+      "Commits" \
+      "grep -n \"\$(printf '\\342\\200\\224')\" '$path'   # replace each with a comma, a colon or a new sentence, then git add '$path'"
+  fi
+done
+
+pc_chain pre-commit "" "$@"

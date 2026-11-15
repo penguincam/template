@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/penguincam/.github/blob/main/SECURITY.md
+    about: Report a security issue privately, not as an issue.
