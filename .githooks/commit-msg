@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # penguincam commit-msg hook.
-# Refuses: AI attribution lines. Warns: non-conventional subject, em dashes.
+# Refuses: AI attribution lines and a message with no Signed-off-by line.
+# Warns: non-conventional subject, em dashes.
 set -u
 
 # shellcheck source=_lib.sh
@@ -14,6 +15,12 @@ if line="$(printf '%s\n' "$text" | pc_ai_attribution_line)"; then
   pc_refuse "commit message carries AI attribution: $line" \
     "Commits" \
     "git commit --amend   # delete that line, then commit again; edit $msg_file the same way"
+fi
+
+if ! printf '%s\n' "$text" | pc_has_signoff; then
+  pc_refuse "commit message has no Signed-off-by line" \
+    "Sign off every commit" \
+    "git commit -S -s   # -s adds the Signed-off-by line from user.name and user.email"
 fi
 
 if [ "$PC_REFUSED" -ne 0 ]; then

@@ -2,6 +2,9 @@
 # Self-test for the penguincam git hooks and the README rule check.
 # Run by `just hooks-test`.
 #
+# Every fixture commit carries a Signed-off-by line unless a case is about
+# a missing one, so each case trips one rule only.
+#
 # Builds a throwaway repository under ${TMPDIR:-/tmp} with fixture commits,
 # pushes to local bare repositories standing in for the organization remote
 # and a fork, and asserts exit codes and messages. No key is used: a commit
@@ -106,10 +109,12 @@ sign_head() {
   git update-ref HEAD "$new"
 }
 
-# A signed commit through the hooks; fails when a hook refuses.
-commit() { git commit -q --allow-empty "$@" && sign_head; }
-# An unsigned commit that skips the commit hooks.
-commit_raw() { git commit -q --allow-empty --no-verify "$@"; }
+# A signed and signed-off commit through the hooks; fails when a hook refuses.
+commit() { git commit -q --allow-empty -s "$@" && sign_head; }
+# An unsigned but signed-off commit that skips the commit hooks.
+commit_raw() { git commit -q --allow-empty --no-verify -s "$@"; }
+# An unsigned commit with no sign-off that skips the commit hooks.
+commit_no_signoff() { git commit -q --allow-empty --no-verify "$@"; }
 
 repo="$work/repo"
 git init -q "$repo"
@@ -147,6 +152,22 @@ check "robot face refused" 1 --refused -- \
 check "[codex] subject prefix refused" 1 --refused -- \
   commit -m "[codex] feat: x"
 check "non-conventional subject warns" 0 --warns -- commit -m "update stuff"
+
+# Sign-off
+check "commit with no Signed-off-by line refused" 1 --refused -- \
+  git commit -q --allow-empty -m "feat: no sign-off"
+out_has "sign-off refusal names the Sign off section" 'Sign off every commit'
+out_has "sign-off refusal gives the command" 'git commit -S -s'
+check "Signed-off-by with no address refused" 1 --refused -- \
+  git commit -q --allow-empty -m "feat: x" -m "Signed-off-by: Hook Test"
+check "Signed-off-by in the subject only refused" 1 --refused -- \
+  git commit -q --allow-empty -m "feat: mention Signed-off-by in prose"
+check "Signed-off-by written by hand passes" 0 --quiet -- \
+  git commit -q --allow-empty -m "feat: x" -m "Signed-off-by: Pat Example <pat@${doc_domain}>"
+check "lower-case signed-off-by passes" 0 --quiet -- \
+  git commit -q --allow-empty -m "feat: x" -m "signed-off-by: Pat Example <pat@${doc_domain}>"
+check "Signed-off-by in a comment line does not count" 1 --refused -- \
+  git commit -q --allow-empty --cleanup=verbatim -m "feat: x" -m "# Signed-off-by: Pat Example <pat@${doc_domain}>"
 check "em dash in message warns" 0 --warns -- commit -m "fix: one ${em} two"
 
 printf 'new %s dash\n' "$em" > dash.txt
@@ -283,6 +304,7 @@ git switch -q -c feat/unsigned "$base"
 commit_raw -m "feat: unsigned work"
 check "unsigned commit refused" 1 --refused -- git push -q origin feat/unsigned
 out_has "unsigned refusal gives the rebase command" 'rebase --force-rebase --gpg-sign'
+out_has "unsigned refusal says not to rebase upstream commits" 'do not rebase them'
 
 git switch -q -c feat/trailer "$base"
 commit_raw -m "feat: trailer" -m "Co-Authored-By: Claude <${claude_addr}>"
@@ -294,6 +316,16 @@ git switch -q -c feat/generated "$base"
 commit_raw -m "feat: generated" -m "Generated with a tool"
 sign_head
 check "generated-by line refused at push" 1 --refused -- git push -q origin feat/generated
+
+git switch -q -c feat/no-signoff "$base"
+commit_no_signoff -m "feat: signed but not signed off"
+sign_head
+check "signed commit with no sign-off refused at push" 1 --refused -- git push -q origin feat/no-signoff
+out_has "push sign-off refusal names the commit list" 'no Signed-off-by line in the pushed range'
+out_has "push sign-off refusal gives the rebase command" 'rebase --force-rebase --signoff --gpg-sign'
+out_has "push sign-off refusal says not to rebase upstream commits" 'do not rebase them'
+check "owner override still refuses a commit with no sign-off" 1 --refused -- \
+  env PENGUINCAM_HOOKS_ALLOW_ORG_PUSH=1 git push -q upstream feat/no-signoff
 
 # Agent files
 agent_case() {
@@ -343,9 +375,11 @@ check "agents-overlay branch refused to the organization even with the override"
   env PENGUINCAM_HOOKS_ALLOW_ORG_PUSH=1 git push -q upstream agents-overlay
 check "agent files pushed from another branch name refused" 1 --refused -- git push -q origin agents-overlay:feat/overlay-copy
 
-# Commits already on the destination remote are not walked again.
+# Commits already on the destination remote are not walked again. This is
+# how upstream history in a fork, unsigned and with no sign-offs, stays out
+# of the walk: the fork already holds it.
 git switch -q -c feat/legacy "$base"
-commit_raw -m "chore: legacy unsigned"
+commit_no_signoff -m "chore: legacy upstream commit, unsigned and not signed off"
 git push -q --no-verify origin feat/legacy
 git switch -q -c feat/stacked
 commit -m "feat: signed on top of legacy"
@@ -394,18 +428,39 @@ sign_head
 git push -q --no-verify archive feat/archived-trailer
 check "AI attribution held only by an archive remote refused at the organization" 1 --refused -- \
   env PENGUINCAM_HOOKS_ALLOW_ORG_PUSH=1 git push -q upstream feat/archived-trailer
+git switch -q -c feat/archived-no-signoff "$base"
+commit_no_signoff -m "chore: archived with no sign-off"
+sign_head
+git push -q --no-verify archive feat/archived-no-signoff
+check "commit with no sign-off held only by an archive remote refused at the organization" 1 --refused -- \
+  env PENGUINCAM_HOOKS_ALLOW_ORG_PUSH=1 git push -q upstream feat/archived-no-signoff
 
-# Merge commits made by GitHub are exempt from the signature rule.
+# Merge commits made by GitHub are exempt from the signature and sign-off
+# rules. The merge below carries neither.
 git switch -q -c feat/merged "$base"
 commit -m "feat: left"
 GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL="$github_merge_addr" \
   git merge -q --no-verify --no-ff -m "Merge pull request from someone/feat/ok" feat/ok
-check "unsigned GitHub merge commit is exempt" 0 --quiet -- git push -q origin feat/merged
+check "unsigned GitHub merge commit with no sign-off is exempt" 0 --quiet -- git push -q origin feat/merged
 
 git switch -q -c feat/local-merge "$base"
 commit -m "feat: right"
-git merge -q --no-verify --no-ff -m "Merge branch 'feat/ok'" feat/ok
+git merge -q --no-verify --no-ff --signoff -m "Merge branch 'feat/ok'" feat/ok
 check "unsigned local merge commit refused" 1 --refused -- git push -q origin feat/local-merge
+out_has "unsigned local merge refusal names the signature" 'unsigned commits in the pushed range'
+
+git switch -q -c feat/local-merge-no-signoff "$base"
+commit -m "feat: right again"
+git merge -q --no-verify --no-ff -m "Merge branch 'feat/ok'" feat/ok
+sign_head
+check "signed local merge commit with no sign-off refused" 1 --refused -- git push -q origin feat/local-merge-no-signoff
+out_has "local merge sign-off refusal names the rule" 'no Signed-off-by line'
+
+git switch -q -c feat/github-lookalike-commit "$base"
+GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL="$github_merge_addr" \
+  commit_no_signoff -m "feat: single-parent commit by GitHub"
+sign_head
+check "single-parent GitHub commit with no sign-off refused" 1 --refused -- git push -q origin feat/github-lookalike-commit
 
 check "branch deletion passes" 0 --quiet -- git push -q origin :wip/x
 

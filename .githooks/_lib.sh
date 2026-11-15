@@ -67,6 +67,12 @@ pc_ai_attribution_line() {
   return 1
 }
 
+# Exit 0 when the message text on stdin carries a Signed-off-by line with a
+# name and an address in angle brackets, as `git commit -s` writes it.
+pc_has_signoff() {
+  grep -qiE '^[[:space:]]*signed-off-by:[[:space:]]*[^<[:space:]][^<]*<[^>[:space:]]+>[[:space:]]*$'
+}
+
 # Print each path on stdin that is an agent path, once. Always exits 0.
 pc_agent_paths() {
   { grep -iE "$PC_AGENT_PATH_RE" || true; } | sort -u

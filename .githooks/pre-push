@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # penguincam pre-push hook.
-# Refuses: a push to any penguincam remote, unsigned commits, AI attribution
-# and agent files in the pushed range. Warns: branch name without a prefix.
+# Refuses: a push to any penguincam remote, and unsigned commits, commits
+# with no Signed-off-by line, AI attribution and agent files in the pushed
+# range. Warns: branch name without a prefix.
 # The pushed range is every commit the destination remote does not hold yet.
 set -u
 
@@ -35,7 +36,7 @@ cat > "$input"
 
 # Only the owner holds write on organization repositories. The owner sets
 # PENGUINCAM_HOOKS_ALLOW_ORG_PUSH=1 for such a push. That skips this check
-# alone: signatures, attribution and agent files are still checked.
+# alone: signatures, sign-offs, attribution and agent files are still checked.
 to_org=0
 if printf '%s\n' "$remote_url" | grep -iqE "$PC_ORG_REMOTE_RE"; then
   to_org=1
@@ -83,20 +84,35 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   unsigned=""
   oldest_unsigned=""
+  unsigned_off=""
+  oldest_unsigned_off=""
   for sha in $commits; do
     raw="$(git cat-file commit "$sha")"
     header="$(printf '%s\n' "$raw" | sed '/^$/q')"
     message="$(printf '%s\n' "$raw" | sed '1,/^$/d')"
     short="$(git rev-parse --short "$sha")"
 
-    if ! printf '%s\n' "$header" | grep -qE '^gpgsig(-sha256)? '; then
-      parents="$(printf '%s\n' "$header" | grep -c '^parent ')"
-      if [ "$parents" -gt 1 ] && printf '%s\n' "$header" | grep -qE '^committer GitHub <noreply@github\.com> '; then
-        : # merge commits made by GitHub are exempt
-      else
-        unsigned="$short${unsigned:+ $unsigned}"
-        oldest_unsigned="$sha"
-      fi
+    # Merge commits made by GitHub are exempt from the signature and the
+    # sign-off rules.
+    github_merge=0
+    parents="$(printf '%s\n' "$header" | grep -c '^parent ')"
+    if [ "$parents" -gt 1 ] && printf '%s\n' "$header" | grep -qE '^committer GitHub <noreply@github\.com> '; then
+      github_merge=1
+    fi
+
+    signed=0
+    if printf '%s\n' "$header" | grep -qE '^gpgsig(-sha256)? '; then signed=1; fi
+    signed_off=0
+    if printf '%s\n' "$message" | pc_has_signoff; then signed_off=1; fi
+
+    if [ "$signed" -eq 0 ] && [ "$github_merge" -eq 0 ]; then
+      unsigned="$short${unsigned:+ $unsigned}"
+      oldest_unsigned="$sha"
+    fi
+
+    if [ "$signed_off" -eq 0 ] && [ "$github_merge" -eq 0 ]; then
+      unsigned_off="$short${unsigned_off:+ $unsigned_off}"
+      oldest_unsigned_off="$sha"
     fi
 
     if line="$(printf '%s\n' "$message" | pc_ai_attribution_line)"; then
@@ -109,7 +125,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ -n "$oldest_unsigned" ]; then
     pc_refuse "unsigned commits in the pushed range: $unsigned" \
       "Commits" \
-      "git config commit.gpgsign true && git rebase --force-rebase --gpg-sign $(pc_rebase_base "$oldest_unsigned") && git push origin HEAD --force-with-lease"
+      "git config commit.gpgsign true && git rebase --force-rebase --gpg-sign $(pc_rebase_base "$oldest_unsigned") && git push origin HEAD --force-with-lease   # if these commits are upstream's, run gh repo sync and git fetch origin first, and do not rebase them"
+  fi
+
+  if [ -n "$oldest_unsigned_off" ]; then
+    pc_refuse "commits with no Signed-off-by line in the pushed range: $unsigned_off" \
+      "Sign off every commit" \
+      "git rebase --force-rebase --signoff --gpg-sign $(pc_rebase_base "$oldest_unsigned_off") && git push origin HEAD --force-with-lease   # if these commits are upstream's, run gh repo sync and git fetch origin first, and do not rebase them"
   fi
 
   # Agent files: refused in every commit of the range and in the pushed tree.
