@@ -248,6 +248,27 @@ awk '{ print } /^## Related$/ { print ""; print "### More" }' "$good" > "$case_f
 readme_case "sub-heading refused" "below"
 sed 's/^One sentence.*/Tracks ENG-123./' "$good" > "$case_file"
 readme_case "ticket id refused" "ticket ids"
+
+# An organization profile page may leave out the title and sections.
+profile_case() {
+  # $1 name, $2 text the finding must contain; the page is $work/readme-case.md
+  check "profile page: $1" 1 --any -- bash "$hooks/readme-check.sh" --profile "$work/readme-case.md"
+  out_has "profile page: $1 names the finding" "$2"
+}
+awk '/^## Related$/ { keep = 1 } keep' "$good" > "$case_file"
+check "profile page with no title and three sections passes" 0 --any -- bash "$hooks/readme-check.sh" --profile "$case_file"
+check "the same page is refused as a README" 1 --any -- bash "$hooks/readme-check.sh" "$case_file"
+check "a full README also passes as a profile page" 0 --any -- bash "$hooks/readme-check.sh" --profile "$good"
+{ printf '# one\n\n# two\n\n'; awk '/^## Related$/ { keep = 1 } keep' "$good"; } > "$case_file"
+profile_case "second title refused" "at most one"
+awk '/^## Related$/ { keep = 1 } keep' "$good" | sed 's/^## Related$/## Usage/' > "$case_file"
+profile_case "unknown section refused" "profile sections must come from"
+printf '## License\n\nApache-2.0.\n\n## Related\n\n- a link\n' > "$case_file"
+profile_case "sections out of order refused" "profile sections must come from"
+printf '## art\n\ntext\n' > "$case_file"
+profile_case "part of a section name refused" "profile sections must come from"
+{ awk '/^## Related$/ { keep = 1 } keep' "$good"; for i in $(seq 1 40); do printf 'line %s\n' "$i"; done; } > "$case_file"
+profile_case "too long refused" "the limit is"
 sed 's/^One sentence.*/Closes #12./' "$good" > "$case_file"
 readme_case "issue number refused" "issue or pull request numbers"
 sed 's|^One sentence.*|See https://linear.app/x/issue/a.|' "$good" > "$case_file"

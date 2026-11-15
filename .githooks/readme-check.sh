@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# penguincam README rule check. Usage: readme-check.sh [README.md]
+# penguincam README rule check. Usage: readme-check.sh [--profile] [README.md]
 #
 # Exits 0 when the file follows the README rule in CONTRIBUTING.md, section
 # "README rule". Prints one line per finding and exits 1 otherwise.
+# With --profile the file is an organization profile page. It may leave out
+# the title and any section, and the sections it has keep the fixed order.
 # Plain bash, grep, sed and awk, compatible with bash 3.2.
 set -u
 
+profile=0
+if [ "${1:-}" = "--profile" ]; then
+  profile=1
+  shift
+fi
 file="${1:-README.md}"
 max_lines="${PENGUINCAM_README_MAX_LINES:-40}"
 want="Start|Tasks|Related|Contributing|License"
@@ -30,19 +37,41 @@ fi
 # shellcheck disable=SC2016 # the backticks are literal
 prose="$(awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence' "$file" | sed 's/`[^`]*`//g')"
 
-first="$(printf '%s\n' "$prose" | sed -n '/[^[:space:]]/{p;q;}')"
-case "$first" in
-  "# "?*) ;;
-  *) fail "the first line must be the title, written as '# Name'" ;;
-esac
-
-if [ "$(printf '%s\n' "$prose" | grep -c '^# ')" -ne 1 ]; then
-  fail "exactly one '# ' title is allowed"
-fi
-
+titles="$(printf '%s\n' "$prose" | grep -c '^# ')"
 got="$(printf '%s\n' "$prose" | sed -n 's/^## *//p' | sed 's/[[:space:]]*$//' | paste -sd '|' -)"
-if [ "$got" != "$want" ]; then
-  fail "sections must be exactly '## ' $(printf '%s' "$want" | sed 's/|/, /g') in that order; found: ${got:-none}"
+if [ "$profile" -eq 1 ]; then
+  if [ "$titles" -gt 1 ]; then
+    fail "at most one '# ' title is allowed on a profile page"
+  fi
+  # Each section must be one of the fixed names, after the one before it.
+  rest="$want|"
+  in_order=1
+  sections="$(printf '%s\n' "$got" | tr '|' '\n')"
+  while IFS= read -r section; do
+    [ -n "$section" ] || continue
+    case "$rest" in
+      "$section|"*) rest="${rest#"$section|"}" ;;
+      *"|$section|"*) rest="${rest#*"|$section|"}" ;;
+      *) in_order=0 ;;
+    esac
+  done <<< "$sections"
+  if [ "$in_order" -ne 1 ]; then
+    fail "profile sections must come from '## ' $(printf '%s' "$want" | sed 's/|/, /g') and keep that order; found: ${got:-none}"
+  fi
+else
+  first="$(printf '%s\n' "$prose" | sed -n '/[^[:space:]]/{p;q;}')"
+  case "$first" in
+    "# "?*) ;;
+    *) fail "the first line must be the title, written as '# Name'" ;;
+  esac
+
+  if [ "$titles" -ne 1 ]; then
+    fail "exactly one '# ' title is allowed"
+  fi
+
+  if [ "$got" != "$want" ]; then
+    fail "sections must be exactly '## ' $(printf '%s' "$want" | sed 's/|/, /g') in that order; found: ${got:-none}"
+  fi
 fi
 
 if printf '%s\n' "$prose" | grep -qE '^#{3,} '; then
